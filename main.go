@@ -100,6 +100,16 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
 		qTypeStr = "PTR"
 	}
 
+    // RemoteAddr() is available directly on ResponseWriter
+    remoteAddr := w.RemoteAddr()
+    
+    // Extract just the IP (strips the port)
+    clientIP, _, err := net.SplitHostPort(remoteAddr.String())
+    if err != nil {
+        // RemoteAddr had no port (unlikely but safe to handle)
+        clientIP = remoteAddr.String()
+    }
+
     //validate that query is for our domain (DNS will randomize case)
     if !strings.EqualFold(q.Name,cfg.Domain) {
         log.Printf("Got query of invalid name: [%s] %s",qTypeStr,q.Name)
@@ -111,7 +121,7 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
 
     //check if question is not an AAAA -> return NOERROR / NOANSWER
     if q.Qtype != dns.TypeAAAA {
-        log.Printf("Got query of incorrect type: [%s] %s",qTypeStr,q.Name)
+        log.Printf("Got query of incorrect type: [%s] from ",qTypeStr,clientIP)
         m := new(dns.Msg)
         m.SetRcode(req, dns.RcodeSuccess)
         _ = w.WriteMsg(m)
@@ -123,16 +133,6 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
 
     log.Printf("Got query of correct type: [%s] uid %d",qTypeStr,id)
     entry.dnsTime = time.Now()
-
-    // RemoteAddr() is available directly on ResponseWriter
-    remoteAddr := w.RemoteAddr()
-    
-    // Extract just the IP (strips the port)
-    clientIP, _, err := net.SplitHostPort(remoteAddr.String())
-    if err != nil {
-        // RemoteAddr had no port (unlikely but safe to handle)
-        clientIP = remoteAddr.String()
-    }
     entry.dnsSrc = remoteAddr
     
     log.Printf("Query from IP: %s", clientIP)
@@ -193,7 +193,7 @@ func listenAndServeDNS() error {
 func main() {
     //create map
     db = make(map[uint32]DbEntry)
-    
+
     configPath := flag.String("conf", "dnsprint.yaml", "path to config file")
     flag.Parse()
 
