@@ -191,6 +191,9 @@ func listenAndServeDNS() error {
 
 //main function
 func main() {
+    //create map
+    db = make(map[uint32]DbEntry)
+    
     configPath := flag.String("conf", "dnsprint.yaml", "path to config file")
     flag.Parse()
 
