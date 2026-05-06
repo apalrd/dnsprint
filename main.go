@@ -99,8 +99,8 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
 		qTypeStr = "PTR"
 	}
 
-    //validate that query is for our domain
-    if q.Name != cfg.Domain {
+    //validate that query is for our domain (DNS will randomize case)
+    if strings.EqualFold(q.Name,cfg.Domain) {
         log.Printf("Got query of invalid name: [%s] %s",qTypeStr,q.Name)
         m := new(dns.Msg)
         m.SetRcode(req, dns.RcodeRefused)
