@@ -69,7 +69,8 @@ func loadConfig(path string) (error) {
 type DbEntry struct {
     //data related to DNS query
     dnsTime     time.Time
-    dnsSrc      net.IP
+    dnsSrc      net.Addr
+    dnsECS      net.IP
     //data related to HTTP queries
     queriedAt   time.Time
 }
@@ -117,10 +118,11 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
         return
     }
 
-    id := rand.Uint32
+    id := rand.Uint32()
+    var entry DbEntry
 
     log.Printf("Got query of correct type: [%s] uid %d",qTypeStr,id)
-    //db[id].dnsTime = time.Now()
+    entry.dnsTime = time.Now()
 
     // RemoteAddr() is available directly on ResponseWriter
     remoteAddr := w.RemoteAddr()
@@ -131,6 +133,7 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
         // RemoteAddr had no port (unlikely but safe to handle)
         clientIP = remoteAddr.String()
     }
+    entry.dnsSrc = remoteAddr
     
     log.Printf("Query from IP: %s", clientIP)
 
@@ -140,9 +143,15 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
         log.Printf("ECS Source prefix:  %d", subnet.SourceNetmask)
         log.Printf("ECS Scope prefix:   %d", subnet.SourceScope)
         log.Printf("ECS Family:         %d (1=IPv4, 2=IPv6)", subnet.Family)
+        entry.dnsECS = subnet.Address
     } else {
         log.Println("No EDNS Client Subnet in query")
     }
+
+    //store data in db
+    db[id] = entry
+
+    log.Printf("DB now has %d entries",len(db))
 
     m := new(dns.Msg)
     m.SetRcode(req, dns.RcodeSuccess)
