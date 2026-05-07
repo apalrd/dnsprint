@@ -85,9 +85,6 @@ type GeoRecord struct {
 		ISOCode string            `maxminddb:"iso_code"`
 		Names   map[string]string `maxminddb:"names"`
 	} `maxminddb:"country"`
-	City struct {
-		Names map[string]string `maxminddb:"names"`
-	} `maxminddb:"city"`
 }
 
 var GeoDb *maxminddb.Reader
@@ -107,20 +104,22 @@ func queryGeoDb(src netip.Addr) GeoRecord {
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	fmt.Printf("Country: %s (%s)\n", record.Country.Names["en"], record.Country.ISOCode)
-	fmt.Printf("City: %s\n", record.City.Names["en"])
 	return record
+}
+
+type DbEcsEntry struct {
+	Addr net.IP
+	Mask uint8
+	Geo  GeoRecord
 }
 
 // database structure
 type DbEntry struct {
 	//data related to DNS query
+	dnsECS  DbEcsEntry
 	dnsTime time.Time
 	dnsSrc  net.Addr
-	dnsECS  net.IP
 	dnsGeo  GeoRecord
-    dnsECSGeo GeoRecord
 	//data related to HTTP queries
 	queriedAt time.Time
 }
@@ -182,7 +181,7 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
 
 	//check if question is not an AAAA -> return NOERROR / NOANSWER
 	//need SOA record for this one
-	if q.Qtype != dns.TypeAAAA {
+	if q.Qtype != dns.TypeAAAA && q.Qtype != dns.TypeTXT {
 		log.Printf("Got query of incorrect type: [%s] from %s", qTypeStr, clientIP)
 		m := new(dns.Msg)
 		m.SetRcode(req, dns.RcodeSuccess)
@@ -202,21 +201,44 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
 	log.Printf("Query from IP: %s", clientIP)
 
 	entry.dnsGeo = queryGeoDb(reqIP)
+	if entry.dnsGeo.Country.ISOCode != "" {
+		log.Printf("Query from CC: %s", entry.dnsGeo.Country.ISOCode)
+	} else {
+		log.Printf("Query from invald CC")
+	}
 
 	// get edns client subnet
 	if subnet := getECS(req); subnet != nil {
+		var ecs DbEcsEntry
+		log.Printf("Query has ECS information present")
 		log.Printf("ECS Address:        %s", subnet.Address)
 		log.Printf("ECS Source prefix:  %d", subnet.SourceNetmask)
-		log.Printf("ECS Scope prefix:   %d", subnet.SourceScope)
 		log.Printf("ECS Family:         %d (1=IPv4, 2=IPv6)", subnet.Family)
-		entry.dnsECS = subnet.Address
-        ecs,_ := netip.ParseAddr(subnet.Address.String())
-        entry.dnsECSGeo = queryGeoDb(ecs)
+		ecs.Addr = subnet.Address
+		ecs.Mask = subnet.SourceNetmask
+		geo, _ := netip.ParseAddr(subnet.Address.String())
+		ecs.Geo = queryGeoDb(geo)
+		log.Printf("ECS Country Code:   %s", ecs.Geo.Country.ISOCode)
+		entry.dnsECS = ecs
+
+		//return ecs with same length as source mask (this is the length we did the lookup with)
 	} else {
 		log.Println("No EDNS Client Subnet in query")
 	}
 
-	//store data in db
+	//If this is a TXT query, return all this data as a TXT
+	if q.Qtype == dns.TypeTXT {
+		log.Printf("Returning TXT query")
+		m := new(dns.Msg)
+		m.SetRcode(req, dns.RcodeSuccess)
+		m.Authoritative = true
+		_ = w.WriteMsg(m)
+		return
+	}
+
+	//Else, this must be an AAAA query, return encoded server address
+
+	//store data in db only for aaaa queries
 	QueryDb[id] = entry
 
 	log.Printf("DB now has %d entries", len(QueryDb))
