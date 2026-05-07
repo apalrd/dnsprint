@@ -37,3 +37,6 @@ dnsprint
 
 # config file
 dnsprint.yaml
+
+# do not commit MaxMind's db
+*.mmdb
