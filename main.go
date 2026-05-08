@@ -485,11 +485,11 @@ func handleWebReq(w http.ResponseWriter, req *http.Request) {
 	log.Printf("Got a web request!")
 	//get forwarded ip
 	if xri := req.Header.Get("X-Real-IP"); xri != "" {
-		fmt.Fprintf(w, "Real IP is %s\n", xri)
+		fmt.Fprintf(w, "Your IP is %s\n", xri)
 	}
 	//get server ip
 	if xri := req.Header.Get("X-Server-IP"); xri != "" {
-		fmt.Fprintf(w, "Server IP is %s\n", xri)
+		fmt.Fprintf(w, "You connected to the server at IP %s\n", xri)
 
 		//extract 32 lsbs
 		ServerIP, err := netip.ParseAddr(xri)
@@ -504,7 +504,6 @@ func handleWebReq(w http.ResponseWriter, req *http.Request) {
 			//get that db entry
 			entry, found := QueryDb[uid]
 			if found {
-				fmt.Fprintf(w, "Entry is %v\n", entry)
 				fmt.Fprintf(w, "Your request came from IP address <b>%s</b>\n",
 					entry.dnsSrc)
 				fmt.Fprintf(w, "\tThis address is geo-located to <b>[%s][%s] %s</b>\n",
@@ -537,8 +536,9 @@ func handleWebReq(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	//dump all headers
+    fmt.Fprintf("Your request (over HTTP, not DNS) contained all of these headers:\n")
 	for name, values := range req.Header {
-		fmt.Fprintf(w, "header %s: %s\n", name, strings.Join(values, ", "))
+		fmt.Fprintf(w, "\t%s: %s\n", name, strings.Join(values, ", "))
 	}
 }
 
