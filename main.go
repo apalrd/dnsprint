@@ -414,7 +414,7 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
 				Name:   req.Question[0].Name, // use the queried name
 				Rrtype: dns.TypeAAAA,
 				Class:  dns.ClassINET,
-				Ttl:    300,
+				Ttl:    60,
 			},
 			AAAA: NewIP,
 		})
