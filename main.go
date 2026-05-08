@@ -191,6 +191,8 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
 		qTypeStr = "SRV"
 	case dns.TypePTR:
 		qTypeStr = "PTR"
+	case dns.TypeHTTPS:
+		qTypeStr = "HTTPS"
 	}
 
 	// RemoteAddr() is available directly on ResponseWriter
