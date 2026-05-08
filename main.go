@@ -462,7 +462,7 @@ func genSOA() {
 }
 
 // listen and serve DNS
-func listenAndServeDNS() error {
+func listenAndServeDNS() {
 	//gen new SOA record
 	genSOA()
 
@@ -477,7 +477,7 @@ func listenAndServeDNS() error {
 	}
 
 	log.Printf("DNS server listening on %s", cfg.Listen)
-	return server.ListenAndServe()
+	log.Fatal(server.ListenAndServe())
 }
 
 // web result handler
@@ -536,7 +536,7 @@ func handleWebReq(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	//dump all headers
-    fmt.Fprintf(w,"Your request (over HTTP, not DNS) contained all of these headers:\n")
+	fmt.Fprintf(w, "Your request (over HTTP, not DNS) contained all of these headers:\n")
 	for name, values := range req.Header {
 		fmt.Fprintf(w, "\t%s: %s\n", name, strings.Join(values, ", "))
 	}
@@ -578,15 +578,25 @@ func main() {
 
 	//load geo db
 	loadGeoDb()
+	defer GeoDb.Close()
 
 	//run the http server
 	go listenAndServeHTTP()
 
-	//run the server
-	if err := listenAndServeDNS(); err != nil {
-		log.Fatalf("server error: %v", err)
-	}
+	//run the dns server
+	go listenAndServeDNS()
 
-	//close geo db
-	GeoDb.Close()
+	//sit in a loop and periodically purge old cache entries
+	for {
+		log.Printf("Doing regular db purge...")
+		//go through the loop and delete anything older than 12 hours
+		for key := range QueryDb {
+			//how old is entry?
+			if time.Now().Sub(QueryDb[key].dnsTime).Hours() > 12 {
+				delete(QueryDb, key)
+			}
+		}
+		//now wait 5 minutes to next trim
+		time.Sleep(5 * time.Minute)
+	}
 }
