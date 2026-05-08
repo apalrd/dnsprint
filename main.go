@@ -482,7 +482,7 @@ func listenAndServeDNS() error {
 
 // web result handler
 func handleWebReq(w http.ResponseWriter, req *http.Request) {
-	io.WriteString(w, "Hello World\n")
+	log.Printf("Got a web request!")
 	//get forwarded ip
 	if xri := req.Header.Get("X-Real-IP"); xri != "" {
 		fmt.Fprintf(w, "Real IP is %s\n", xri)
@@ -549,7 +549,7 @@ func handleWebStats(w http.ResponseWriter, req *http.Request) {
 
 // web listen and serve
 func listenAndServeHTTP() {
-	http.HandleFunc("/", handleWebReq)
+	http.HandleFunc("/data", handleWebReq)
 	http.HandleFunc("/stats", handleWebStats)
 
 	//if we are doing TLS
