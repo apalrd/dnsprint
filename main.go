@@ -3,9 +3,11 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
 	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"slices"
@@ -29,15 +31,16 @@ type ConfigRule struct {
 
 // configuration structure
 type Config struct {
-	Listen     string       `yaml:"listen"` // clients connect to us e.g. "[::]:53"
-	GeoDb      string       `yaml:"geodb"`  // path to geo-ip database (.mmdb)
-	ASNDb      string       `yaml:"asndb"`  // path to asn-ip database (.mmdb)
-	Domain     string       `yaml:"domain"` // domain name we respond to (we REFUSE everything else)
-	PoolStr    string       `yaml:"pool"`   // address pool for serving http data (cidr-notation)
-	PoolIP     *net.IPNet   // decoded from pool
-	Nameserver string       `yaml:"ns"`    // nameserver name (fqdn)
-	Rname      string       `yaml:"rname"` // rname/mailbox (for soa record)
-	Rules      []ConfigRule `yaml:"rules"` // downstream interfaces
+	Listen     string       `yaml:"listen"`     // clients connect to us e.g. "[::]:53"
+	GeoDb      string       `yaml:"geodb"`      // path to geo-ip database (.mmdb)
+	ASNDb      string       `yaml:"asndb"`      // path to asn-ip database (.mmdb)
+	Domain     string       `yaml:"domain"`     // domain name we respond to (we REFUSE everything else)
+	Nameserver string       `yaml:"ns"`         // nameserver name (fqdn)
+	Rname      string       `yaml:"rname"`      // rname/mailbox (for soa record)
+	Rules      []ConfigRule `yaml:"rules"`      // downstream interfaces
+	TlsKey     string       `yaml:"tls_key"`    //TLS key file
+	TlsCert    string       `yaml:"tls_cert"`   //TLS cert file
+	WebListen  string       `yaml:"web_listen"` //Listen for the web portion
 }
 
 var cfg Config
@@ -53,20 +56,6 @@ func loadConfig(path string) error {
 	if err := yaml.NewDecoder(f).Decode(&cfg); err != nil {
 		return err
 	}
-
-	//validate ip net
-	ip, network, err := net.ParseCIDR(cfg.PoolStr)
-	if err != nil {
-		return fmt.Errorf("invalid CIDR: %w", err)
-	}
-	if ip.Equal(network.IP) == false {
-		return fmt.Errorf("CIDR must be a network address, not a host address")
-	}
-	mask, total := network.Mask.Size()
-	if (total - mask) < 32 {
-		return fmt.Errorf("CIDR must have at least 32 bits to work with (mask %d total %d)", mask, total)
-	}
-	cfg.PoolIP = network
 
 	//validate listen
 	if cfg.Listen == "" {
@@ -87,6 +76,12 @@ func loadConfig(path string) error {
 	//validate rname is fully qualified
 	if !strings.HasSuffix(cfg.Rname, ".") {
 		return fmt.Errorf("Rname not specified or not fully-qualified (must end with .)")
+	}
+
+	//validate web listen
+	if cfg.WebListen == "" {
+		log.Printf("WebListen not specified, using default")
+		cfg.WebListen = "[::]:8080"
 	}
 
 	return nil
@@ -483,6 +478,31 @@ func listenAndServeDNS() error {
 	return server.ListenAndServe()
 }
 
+// web result handler
+func handleWebReq(w http.ResponseWriter, req *http.Request) {
+	io.WriteString(w, "Hello World\n")
+}
+
+// stats handler
+func handleWebStats(w http.ResponseWriter, req *http.Request) {
+	io.WriteString(w, "Hello Stats\n")
+}
+
+// web listen and serve
+func listenAndServeHTTP() {
+	http.HandleFunc("/", handleWebReq)
+	http.HandleFunc("/stats", handleWebStats)
+
+	//if we are doing TLS
+	if len(cfg.TlsCert) > 0 && len(cfg.TlsKey) > 0 {
+		log.Printf("Go to https://%s/", cfg.WebListen)
+		log.Fatal(http.ListenAndServeTLS(cfg.WebListen, cfg.TlsCert, cfg.TlsKey, nil))
+	}
+
+	log.Printf("Go to http://%s/", cfg.WebListen)
+	log.Fatal(http.ListenAndServe(cfg.WebListen, nil))
+}
+
 // main function
 func main() {
 	//allocate map
@@ -499,6 +519,9 @@ func main() {
 
 	//load geo db
 	loadGeoDb()
+
+	//run the http server
+	go listenAndServeHTTP()
 
 	//run the server
 	if err := listenAndServeDNS(); err != nil {
