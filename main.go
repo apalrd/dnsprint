@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"flag"
 	"fmt"
 	"io"
@@ -40,6 +42,7 @@ type Config struct {
 	Rules      []ConfigRule `yaml:"rules"`      // downstream interfaces
 	TlsKey     string       `yaml:"tls_key"`    //TLS key file
 	TlsCert    string       `yaml:"tls_cert"`   //TLS cert file
+	TlsClient  string       `yaml:"tls_client"` //TLS client certificate authority
 	WebListen  string       `yaml:"web_listen"` //Listen for the web portion
 }
 
@@ -573,17 +576,46 @@ func handleWebStats(w http.ResponseWriter, req *http.Request) {
 
 // web listen and serve
 func listenAndServeHTTP() {
-	http.HandleFunc("/data", handleWebReq)
-	http.HandleFunc("/stats", handleWebStats)
+	//request handlers
+	handler := http.NewServeMux()
+	handler.HandleFunc("/data", handleWebReq)
+	handler.HandleFunc("/stats", handleWebStats)
+
+	server := http.Server{
+		Addr:    cfg.WebListen,
+		Handler: handler,
+	}
 
 	//if we are doing TLS
 	if len(cfg.TlsCert) > 0 && len(cfg.TlsKey) > 0 {
+
+		//If we are doing mTLS
+		if len(cfg.TlsClient) > 0 {
+			caCertFile, err := os.ReadFile(cfg.TlsClient)
+			if err != nil {
+				log.Fatalf("error reading CA certificate: %v", err)
+			}
+			caCertPool := x509.NewCertPool()
+			caCertPool.AppendCertsFromPEM(caCertFile)
+
+			// Create the TLS Config with the CA pool and enable Client certificate validation
+			tlsConfig := &tls.Config{
+				ClientCAs:  caCertPool,
+				ClientAuth: tls.RequireAndVerifyClientCert,
+			}
+			tlsConfig.BuildNameToCertificate()
+
+			// update tlsConfig
+			server.TLSConfig = tlsConfig
+			log.Printf("Requiring TLS Client Certificates")
+		}
+
 		log.Printf("Go to https://%s/", cfg.WebListen)
-		log.Fatal(http.ListenAndServeTLS(cfg.WebListen, cfg.TlsCert, cfg.TlsKey, nil))
+		log.Fatal(server.ListenAndServeTLS(cfg.TlsCert, cfg.TlsKey))
 	}
 
 	log.Printf("Go to http://%s/", cfg.WebListen)
-	log.Fatal(http.ListenAndServe(cfg.WebListen, nil))
+	log.Fatal(server.ListenAndServe())
 }
 
 // main function
@@ -616,7 +648,7 @@ func main() {
 		//go through the loop and delete anything older than 12 hours
 		for key := range QueryDb {
 			//how old is entry?
-			if time.Now().Sub(QueryDb[key].dnsTime).Hours() > 12 {
+			if time.Now().Sub(QueryDb[key].dnsTime).Hours() >= 12 {
 				delete(QueryDb, key)
 			}
 		}
