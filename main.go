@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -18,11 +19,12 @@ import (
 )
 
 type ConfigRule struct {
-	Name       string `yaml:"name"`
-	Country    string `yaml:"cc"`
-	Continent  string `yaml:"cont"`
-	RegCountry string `yaml:"regcc"`
-	Result     string `yaml:"result"`
+	Name       string   `yaml:"name"`
+	Continent  string   `yaml:"cont"`
+	Country    []string `yaml:"cc"`
+	RegCountry []string `yaml:"regcc"`
+	ASN        []int    `yaml:"asn"`
+	Result     string   `yaml:"result"`
 }
 
 // configuration structure
@@ -286,22 +288,34 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
 	//perform rule lookup in order
 	var rule *ConfigRule
 	for _, thisRule := range cfg.Rules {
-		log.Printf("Parsing rule %v", thisRule)
-		//If it has a country, check that
-		if thisRule.Country == dnsGeo.Country.ISOCode {
-			log.Printf("Matches Country")
-			rule = &thisRule
-			break
-		} else if thisRule.RegCountry == dnsGeo.RegCountry.ISOCode {
-			log.Printf("Matches RegCountry")
-			rule = &thisRule
-			break
-		} else if thisRule.Continent == dnsGeo.Continent.Code {
-			log.Printf("Matches RegCountry")
-			rule = &thisRule
-			break
+		//If it has a continent, make sure it matches
+		if len(thisRule.Continent) > 0 {
+			//If it does not match, exit
+			if thisRule.Continent != dnsGeo.Continent.Code {
+				continue
+			}
 		}
-		//fallthrough to next case
+		//If this rule has an ASN, check that we are in the list
+		if len(thisRule.ASN) > 0 {
+			if !slices.Contains(thisRule.ASN, dnsASN.ASN) {
+				continue
+			}
+		}
+		//If this rule has a RegCountry, check that we are in the list
+		if len(thisRule.RegCountry) > 0 {
+			if !slices.Contains(thisRule.RegCountry, dnsGeo.RegCountry.ISOCode) {
+				continue
+			}
+		}
+		//If this rule has a Country, check that we are in the list
+		if len(thisRule.Country) > 0 {
+			if !slices.Contains(thisRule.Country, dnsGeo.Country.ISOCode) {
+				continue
+			}
+		}
+		//This rule matches!
+		rule = &thisRule
+		break
 	}
 
 	if rule == nil {
@@ -387,15 +401,35 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
-	//Else, this must be an AAAA query, return encoded server address
+	//therefore, we must return aaaa
+	m := new(dns.Msg)
+
+	//If we hit a rule, add it to the replies section
+	if rule != nil {
+		//compute address w/ id
+		//I hate this string conv but it works
+		NewPref, _ := netip.ParsePrefix(rule.Result)
+		NewIPStr := NewPref.Addr().String() + fmt.Sprintf("%4x:%4x", uint16((id&0xffff0000)>>16), uint16(id&0x0000ffff))
+		NewIP := net.ParseIP(NewIPStr)
+		log.Printf("New IP is %v", NewIP)
+		m.Answer = append(m.Answer, &dns.AAAA{
+			Hdr: dns.RR_Header{
+				Name:   req.Question[0].Name, // use the queried name
+				Rrtype: dns.TypeAAAA,
+				Class:  dns.ClassINET,
+				Ttl:    300,
+			},
+			AAAA: NewIP,
+		})
+	}
 
 	//store data in db only for aaaa queries
 	QueryDb[id] = entry
 
 	log.Printf("DB now has %d entries", len(QueryDb))
 
-	m := new(dns.Msg)
 	m.SetRcode(req, dns.RcodeSuccess)
+	m.Authoritative = true
 	_ = w.WriteMsg(m)
 }
 
