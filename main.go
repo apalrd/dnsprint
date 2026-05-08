@@ -536,7 +536,7 @@ func handleWebReq(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	//dump all headers
-    fmt.Fprintf("Your request (over HTTP, not DNS) contained all of these headers:\n")
+    fmt.Fprintf(w,"Your request (over HTTP, not DNS) contained all of these headers:\n")
 	for name, values := range req.Header {
 		fmt.Fprintf(w, "\t%s: %s\n", name, strings.Join(values, ", "))
 	}
