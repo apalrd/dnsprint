@@ -17,15 +17,25 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type ConfigRule struct {
+	Name       string `yaml:"name"`
+	Country    string `yaml:"cc"`
+	Continent  string `yaml:"cont"`
+	RegCountry string `yaml:"regcc"`
+	Result     string `yaml:"result"`
+}
+
 // configuration structure
 type Config struct {
-	Listen     string     `yaml:"listen"` // clients connect to us e.g. "[::]:53"
-	GeoDb      string     `yaml:"geodb"`  // path to geo-ip database (.mmdb)
-	Domain     string     `yaml:"domain"` // domain name we respond to (we REFUSE everything else)
-	PoolStr    string     `yaml:"pool"`   // address pool for serving http data (cidr-notation)
-	PoolIP     *net.IPNet // decoded from pool
-	Nameserver string     `yaml:"ns"`    // nameserver name (fqdn)
-	Rname      string     `yaml:"rname"` // rname/mailbox (for soa record)
+	Listen     string       `yaml:"listen"` // clients connect to us e.g. "[::]:53"
+	GeoDb      string       `yaml:"geodb"`  // path to geo-ip database (.mmdb)
+	ASNDb      string       `yaml:"asndb"`  // path to asn-ip database (.mmdb)
+	Domain     string       `yaml:"domain"` // domain name we respond to (we REFUSE everything else)
+	PoolStr    string       `yaml:"pool"`   // address pool for serving http data (cidr-notation)
+	PoolIP     *net.IPNet   // decoded from pool
+	Nameserver string       `yaml:"ns"`    // nameserver name (fqdn)
+	Rname      string       `yaml:"rname"` // rname/mailbox (for soa record)
+	Rules      []ConfigRule `yaml:"rules"` // downstream interfaces
 }
 
 var cfg Config
@@ -85,17 +95,38 @@ type GeoRecord struct {
 		ISOCode string            `maxminddb:"iso_code"`
 		Names   map[string]string `maxminddb:"names"`
 	} `maxminddb:"country"`
+	RegCountry struct {
+		ISOCode string            `maxminddb:"iso_code"`
+		Names   map[string]string `maxminddb:"names"`
+	} `maxminddb:"registered_country"`
+	Continent struct {
+		Code string `maxminddb:"code"`
+	} `maxminddb:"continent"`
+}
+
+type ASNRecord struct {
+	ASN int    `maxminddb:"autonomous_system_number"`
+	Org string `maxminddb:"autonomous_system_organization"`
 }
 
 var GeoDb *maxminddb.Reader
+var ASNDb *maxminddb.Reader
 
 // load geodb
 func loadGeoDb() {
+	//load country/city db
 	db, err := maxminddb.Open(cfg.GeoDb)
 	if err != nil {
 		log.Fatal(err)
 	}
 	GeoDb = db
+
+	//load asn db (not sure why they can't merge these)
+	adb, aerr := maxminddb.Open(cfg.ASNDb)
+	if err != nil {
+		log.Fatal(aerr)
+	}
+	ASNDb = adb
 }
 
 func queryGeoDb(src netip.Addr) GeoRecord {
@@ -107,10 +138,20 @@ func queryGeoDb(src netip.Addr) GeoRecord {
 	return record
 }
 
+func queryASNDb(src netip.Addr) ASNRecord {
+	var record ASNRecord
+	err := ASNDb.Lookup(src).Decode(&record)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return record
+}
+
 type DbEcsEntry struct {
 	Addr net.IP
 	Mask uint8
 	Geo  GeoRecord
+	ASN  ASNRecord
 }
 
 // database structure
@@ -120,6 +161,7 @@ type DbEntry struct {
 	dnsTime time.Time
 	dnsSrc  net.Addr
 	dnsGeo  GeoRecord
+	dnsASN  ASNRecord
 	//data related to HTTP queries
 	queriedAt time.Time
 }
@@ -200,15 +242,23 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
 
 	log.Printf("Query from IP: %s", clientIP)
 
-	entry.dnsGeo = queryGeoDb(reqIP)
+	dnsGeo := queryGeoDb(reqIP)
+	entry.dnsGeo = dnsGeo
 	if entry.dnsGeo.Country.ISOCode != "" {
 		log.Printf("Query from CC: %s", entry.dnsGeo.Country.ISOCode)
+		log.Printf("Query from reg CC: %s", entry.dnsGeo.RegCountry.ISOCode)
+		log.Printf("Query from continent: %s", entry.dnsGeo.Continent.Code)
 	} else {
 		log.Printf("Query from invald CC")
 	}
 
+	dnsASN := queryASNDb(reqIP)
+	entry.dnsASN = dnsASN
+	log.Printf("Query from ASN: %d [%s]", entry.dnsASN.ASN, entry.dnsASN.Org)
+
 	// get edns client subnet
-	if subnet := getECS(req); subnet != nil {
+	subnet := getECS(req)
+	if subnet != nil {
 		var ecs DbEcsEntry
 		log.Printf("Query has ECS information present")
 		log.Printf("ECS Address:        %s", subnet.Address)
@@ -218,20 +268,121 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
 		ecs.Mask = subnet.SourceNetmask
 		geo, _ := netip.ParseAddr(subnet.Address.String())
 		ecs.Geo = queryGeoDb(geo)
+		ecs.ASN = queryASNDb(geo)
 		log.Printf("ECS Country Code:   %s", ecs.Geo.Country.ISOCode)
+		log.Printf("ECS Registration CC:%s", ecs.Geo.RegCountry.ISOCode)
+		log.Printf("ECS Continent:      %s", ecs.Geo.Continent.Code)
+		log.Printf("ECS ASN:            %d [%s]", ecs.ASN.ASN, ecs.ASN.Org)
 		entry.dnsECS = ecs
+		//use ECS data for geo localization
+		dnsGeo = ecs.Geo
+		dnsASN = ecs.ASN
 
 		//return ecs with same length as source mask (this is the length we did the lookup with)
 	} else {
 		log.Println("No EDNS Client Subnet in query")
 	}
 
+	//perform rule lookup in order
+	var rule *ConfigRule
+	for _, thisRule := range cfg.Rules {
+		log.Printf("Parsing rule %v", thisRule)
+		//If it has a country, check that
+		if thisRule.Country == dnsGeo.Country.ISOCode {
+			log.Printf("Matches Country")
+			rule = &thisRule
+			break
+		} else if thisRule.RegCountry == dnsGeo.RegCountry.ISOCode {
+			log.Printf("Matches RegCountry")
+			rule = &thisRule
+			break
+		} else if thisRule.Continent == dnsGeo.Continent.Code {
+			log.Printf("Matches RegCountry")
+			rule = &thisRule
+			break
+		}
+		//fallthrough to next case
+	}
+
+	if rule == nil {
+		log.Printf("Did not find any mapping entries!")
+	} else {
+		log.Printf("Rule matched: %v", rule.Name)
+	}
+
 	//If this is a TXT query, return all this data as a TXT
 	if q.Qtype == dns.TypeTXT {
+
 		log.Printf("Returning TXT query")
 		m := new(dns.Msg)
 		m.SetRcode(req, dns.RcodeSuccess)
 		m.Authoritative = true
+		//geo we ended up using for location
+		m.Answer = append(m.Answer, &dns.TXT{
+			Hdr: dns.RR_Header{
+				Name:   req.Question[0].Name, // use the queried name
+				Rrtype: dns.TypeTXT,
+				Class:  dns.ClassINET,
+				Ttl:    300,
+			},
+			Txt: []string{fmt.Sprintf("Geo cc=%s regcc=%s cont=%s asn=%d",
+				dnsGeo.Country.ISOCode,
+				dnsGeo.RegCountry.ISOCode,
+				dnsGeo.Continent.Code,
+				dnsASN.ASN)},
+		})
+		//original geo query
+		m.Answer = append(m.Answer, &dns.TXT{
+			Hdr: dns.RR_Header{
+				Name:   req.Question[0].Name, // use the queried name
+				Rrtype: dns.TypeTXT,
+				Class:  dns.ClassINET,
+				Ttl:    300,
+			},
+			Txt: []string{fmt.Sprintf("OrigGeo cc=%s regcc=%s cont=%s asn=%d",
+				entry.dnsGeo.Country.ISOCode,
+				entry.dnsGeo.RegCountry.ISOCode,
+				entry.dnsGeo.Continent.Code,
+				entry.dnsASN.ASN)},
+		})
+		//ecs (if present)
+		if subnet != nil {
+			m.Answer = append(m.Answer, &dns.TXT{
+				Hdr: dns.RR_Header{
+					Name:   req.Question[0].Name, // use the queried name
+					Rrtype: dns.TypeTXT,
+					Class:  dns.ClassINET,
+					Ttl:    300,
+				},
+				Txt: []string{fmt.Sprintf("ECSGeo cc=%s regcc=%s cont=%s asn=%d",
+					entry.dnsECS.Geo.Country.ISOCode,
+					entry.dnsECS.Geo.RegCountry.ISOCode,
+					entry.dnsECS.Geo.Continent.Code,
+					entry.dnsECS.ASN.ASN)},
+			})
+		}
+		//rule we hit
+		if rule != nil {
+			m.Answer = append(m.Answer, &dns.TXT{
+				Hdr: dns.RR_Header{
+					Name:   req.Question[0].Name, // use the queried name
+					Rrtype: dns.TypeTXT,
+					Class:  dns.ClassINET,
+					Ttl:    300,
+				},
+				Txt: []string{fmt.Sprintf("Rule=%s", rule.Name)},
+			})
+		} else {
+			m.Answer = append(m.Answer, &dns.TXT{
+				Hdr: dns.RR_Header{
+					Name:   req.Question[0].Name, // use the queried name
+					Rrtype: dns.TypeTXT,
+					Class:  dns.ClassINET,
+					Ttl:    300,
+				},
+				Txt: []string{fmt.Sprintf("Rule=NONE", rule.Name)},
+			})
+		}
 		_ = w.WriteMsg(m)
 		return
 	}
