@@ -487,7 +487,24 @@ func handleWebReq(w http.ResponseWriter, req *http.Request) {
 	log.Printf("Got a web request!")
 	//get forwarded ip
 	if xri := req.Header.Get("X-Real-IP"); xri != "" {
-		fmt.Fprintf(w, "Your IP is %s\n", xri)
+		fmt.Fprintf(w, "Your IP (of the HTTP connection) is %s\n", xri)
+		reqIP, err := netip.ParseAddr(xri)
+		if err != nil {
+			// invalid?
+			log.Printf("Unable to parse your IP: %s", err)
+		} else {
+			geo := queryGeoDb(reqIP)
+			asn := queryASNDb(reqIP)
+			fmt.Fprintf(w, "\tThis address is geo-located to <b>[%s][%s] %s</b>\n",
+				geo.Continent.Code,
+				geo.Country.ISOCode,
+				geo.Country.Names["en"])
+			fmt.Fprintf(w, "\tThis prefix is owned by AS <b>#%d [%s]</b>, registered in <b>[%s] %s</b>\n",
+				asn.ASN,
+				asn.Org,
+				geo.RegCountry.ISOCode,
+				geo.RegCountry.Names["en"])
+		}
 	}
 	//get server ip
 	if xri := req.Header.Get("X-Server-IP"); xri != "" {
@@ -506,8 +523,9 @@ func handleWebReq(w http.ResponseWriter, req *http.Request) {
 			//get that db entry
 			entry, found := QueryDb[uid]
 			if found {
-				fmt.Fprintf(w, "Your request came from IP address <b>%s</b>\n",
+				fmt.Fprintf(w, "The DNS request which sent you here came from IP address <b>%s</b>\n",
 					entry.dnsSrc)
+				fmt.Fprintf(w, "\t(This is the address of your resolver, which may be your ISPs, or a public resolver)\n")
 				fmt.Fprintf(w, "\tThis address is geo-located to <b>[%s][%s] %s</b>\n",
 					entry.dnsGeo.Continent.Code,
 					entry.dnsGeo.Country.ISOCode,
@@ -518,7 +536,7 @@ func handleWebReq(w http.ResponseWriter, req *http.Request) {
 					entry.dnsGeo.RegCountry.ISOCode,
 					entry.dnsGeo.RegCountry.Names["en"])
 				if entry.dnsECS.Present {
-					fmt.Fprintf(w, "Your request included EDNS Client Subnet (ECS) request,\n")
+					fmt.Fprintf(w, "Your DNS request included EDNS Client Subnet (ECS) request,\n")
 					fmt.Fprintf(w, "\tThis indicates a source IP range <b>%s/%d</b>\n",
 						entry.dnsECS.Addr,
 						entry.dnsECS.Mask)
@@ -531,14 +549,18 @@ func handleWebReq(w http.ResponseWriter, req *http.Request) {
 						entry.dnsECS.ASN.Org,
 						entry.dnsECS.Geo.RegCountry.ISOCode,
 						entry.dnsECS.Geo.RegCountry.Names["en"])
+				} else {
+					fmt.Fprintf(w, "Your DNS request did not include EDNS Client Subnet (ECS)\n")
 				}
 			} else {
 				fmt.Fprintf(w, "Unable to match request to a DNS query!\n")
 			}
+		} else {
+			fmt.Fprintf(w, "Your are not connected via IPv6, so I can't provide DNS information, sorry\n")
 		}
 	}
 	//dump all headers
-	fmt.Fprintf(w, "Your request (over HTTP, not DNS) contained all of these headers:\n")
+	fmt.Fprintf(w, "Your request (over HTTP) contained all of these headers:\n")
 	for name, values := range req.Header {
 		fmt.Fprintf(w, "\t%s: %s\n", name, strings.Join(values, ", "))
 	}
