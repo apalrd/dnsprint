@@ -145,10 +145,11 @@ func queryASNDb(src netip.Addr) ASNRecord {
 }
 
 type DbEcsEntry struct {
-	Addr net.IP
-	Mask uint8
-	Geo  GeoRecord
-	ASN  ASNRecord
+	Present bool
+	Addr    net.IP
+	Mask    uint8
+	Geo     GeoRecord
+	ASN     ASNRecord
 }
 
 // database structure
@@ -156,9 +157,10 @@ type DbEntry struct {
 	//data related to DNS query
 	dnsECS  DbEcsEntry
 	dnsTime time.Time
-	dnsSrc  net.Addr
+	dnsSrc  string
 	dnsGeo  GeoRecord
 	dnsASN  ASNRecord
+	dnsRule string
 	//data related to HTTP queries
 	queriedAt time.Time
 }
@@ -235,7 +237,7 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
 
 	log.Printf("Got query of correct type: [%s] uid %d", qTypeStr, id)
 	entry.dnsTime = time.Now()
-	entry.dnsSrc = remoteAddr
+	entry.dnsSrc = clientIP
 
 	log.Printf("Query from IP: %s", clientIP)
 
@@ -266,6 +268,7 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
 		geo, _ := netip.ParseAddr(subnet.Address.String())
 		ecs.Geo = queryGeoDb(geo)
 		ecs.ASN = queryASNDb(geo)
+		ecs.Present = true
 		log.Printf("ECS Country Code:   %s", ecs.Geo.Country.ISOCode)
 		log.Printf("ECS Registration CC:%s", ecs.Geo.RegCountry.ISOCode)
 		log.Printf("ECS Continent:      %s", ecs.Geo.Continent.Code)
@@ -313,10 +316,9 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
 		break
 	}
 
-	if rule == nil {
-		log.Printf("Did not find any mapping entries!")
-	} else {
-		log.Printf("Rule matched: %v", rule.Name)
+	entry.dnsRule = "NONE"
+	if rule != nil {
+		entry.dnsRule = rule.Name
 	}
 
 	//If this is a TXT query, return all this data as a TXT
@@ -481,6 +483,63 @@ func listenAndServeDNS() error {
 // web result handler
 func handleWebReq(w http.ResponseWriter, req *http.Request) {
 	io.WriteString(w, "Hello World\n")
+	//get forwarded ip
+	if xri := req.Header.Get("X-Real-IP"); xri != "" {
+		fmt.Fprintf(w, "Real IP is %s\n", xri)
+	}
+	//get server ip
+	if xri := req.Header.Get("X-Server-IP"); xri != "" {
+		fmt.Fprintf(w, "Server IP is %s\n", xri)
+
+		//extract 32 lsbs
+		ServerIP, err := netip.ParseAddr(xri)
+		if err != nil {
+			//bail
+			fmt.Fprintf(w, "Error parsing X-Server-IP as an address: %v\n", err)
+		} else if ServerIP.Is6() {
+			//extract lower 32 bytes of the ipv6 addr
+			addr6 := ServerIP.As16()
+			uid := uint32(addr6[12])<<24 | uint32(addr6[13])<<16 | uint32(addr6[14])<<8 | uint32(addr6[15])
+			fmt.Fprintf(w, "Extracted uid %d\n", uid)
+			//get that db entry
+			entry, found := QueryDb[uid]
+			if found {
+				fmt.Fprintf(w, "Entry is %v\n", entry)
+				fmt.Fprintf(w, "Your request came from IP address <b>%s</b>\n",
+					entry.dnsSrc)
+				fmt.Fprintf(w, "\tThis address is geo-located to <b>[%s][%s] %s</b>\n",
+					entry.dnsGeo.Continent.Code,
+					entry.dnsGeo.Country.ISOCode,
+					entry.dnsGeo.Country.Names["en"])
+				fmt.Fprintf(w, "\tThis address is in a prefix owned by AS <b>#%d [%s]</b>, registered in <b>[%s] %s</b>\n",
+					entry.dnsASN.ASN,
+					entry.dnsASN.Org,
+					entry.dnsGeo.RegCountry.ISOCode,
+					entry.dnsGeo.RegCountry.Names["en"])
+				if entry.dnsECS.Present {
+					fmt.Fprintf(w, "Your request included EDNS Client Subnet (ECS) request,\n")
+					fmt.Fprintf(w, "\tThis indicates a source IP range <b>%s/%d</b>\n",
+						entry.dnsECS.Addr,
+						entry.dnsECS.Mask)
+					fmt.Fprintf(w, "\tThis address is geo-located to <b>[%s][%s] %s</b>\n",
+						entry.dnsECS.Geo.Continent.Code,
+						entry.dnsECS.Geo.Country.ISOCode,
+						entry.dnsECS.Geo.Country.Names["en"])
+					fmt.Fprintf(w, "\tThis prefix is owned by AS <b>#%d [%s]</b>, registered in <b>[%s] %s</b>\n",
+						entry.dnsECS.ASN.ASN,
+						entry.dnsECS.ASN.Org,
+						entry.dnsECS.Geo.RegCountry.ISOCode,
+						entry.dnsECS.Geo.RegCountry.Names["en"])
+				}
+			} else {
+				fmt.Fprintf(w, "Unable to match request to a DNS query!\n")
+			}
+		}
+	}
+	//dump all headers
+	for name, values := range req.Header {
+		fmt.Fprintf(w, "header %s: %s\n", name, strings.Join(values, ", "))
+	}
 }
 
 // stats handler
