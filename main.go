@@ -555,10 +555,10 @@ func handleWebReq(w http.ResponseWriter, req *http.Request) {
 				} else {
 					fmt.Fprintf(w, "Your DNS request did not include EDNS Client Subnet (ECS)\n")
 				}
+			    fmt.Fprintf(w, "Based on your dns query, we matched you via rule name <b>%s</b>\n", entry.dnsRule)
 			} else {
 				fmt.Fprintf(w, "Unable to match request to a DNS query!\n")
 			}
-			fmt.Fprintf(w, "Based on your dns query, we matched you via rule name <b>%s</b>\n", entry.dnsRule)
 		} else {
 			fmt.Fprintf(w, "Your are not connected via IPv6, so I can't provide DNS information, sorry\n")
 		}
