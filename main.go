@@ -555,7 +555,7 @@ func handleWebReq(w http.ResponseWriter, req *http.Request) {
 				} else {
 					fmt.Fprintf(w, "Your DNS request did not include EDNS Client Subnet (ECS)\n")
 				}
-			    fmt.Fprintf(w, "Based on your dns query, we matched you via rule name <b>%s</b>\n", entry.dnsRule)
+				fmt.Fprintf(w, "Based on your dns query, we matched you via rule name <b>%s</b>\n", entry.dnsRule)
 			} else {
 				fmt.Fprintf(w, "Unable to match request to a DNS query!\n")
 			}
@@ -570,6 +570,87 @@ func handleWebReq(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+// web result handler as json
+func handleWebJson(w http.ResponseWriter, req *http.Request) {
+	log.Printf("Got a json request!")
+	fmt.Fprintf(w, "{\n")
+	//get forwarded ip
+	if xri := req.Header.Get("X-Real-IP"); xri != "" {
+		fmt.Fprintf(w, "\"conn\":{\n")
+		fmt.Fprintf(w, "\"ip\":\"%s\",\n", xri)
+		reqIP, err := netip.ParseAddr(xri)
+		if err != nil {
+			// invalid?
+			fmt.Fprintf(w, "\"status\":\"%s\"", err)
+		} else {
+			geo := queryGeoDb(reqIP)
+			asn := queryASNDb(reqIP)
+			fmt.Fprintf(w, "\"geo\":{\"Cont\":\"%s\",\"CC\":\"%s\",\"Name\":\"%s\"},\n",
+				geo.Continent.Code,
+				geo.Country.ISOCode,
+				geo.Country.Names["en"])
+			fmt.Fprintf(w, "\"prefix\":{\"ASN\":\"%d\",\"Org\":\"%s\",\"CC\":\"%s\",\"Name\":\"%s\"},\n",
+				asn.ASN,
+				asn.Org,
+				geo.RegCountry.ISOCode,
+				geo.RegCountry.Names["en"])
+		}
+		fmt.Fprintf(w, "\"status\":\"ok\"},")
+	}
+	//get server ip
+	if xri := req.Header.Get("X-Server-IP"); xri != "" {
+		fmt.Fprintf(w, "\"dns\":{\n")
+		fmt.Fprintf(w, "\"srv\":\"%s\",\n", xri)
+
+		//extract 32 lsbs
+		ServerIP, err := netip.ParseAddr(xri)
+		if err != nil {
+			//bail
+			fmt.Fprintf(w, "\"status\":\"%s\"}\n", err)
+		} else if ServerIP.Is6() {
+			//extract lower 32 bytes of the ipv6 addr
+			addr6 := ServerIP.As16()
+			uid := uint32(addr6[12])<<24 | uint32(addr6[13])<<16 | uint32(addr6[14])<<8 | uint32(addr6[15])
+			//get that db entry
+			entry, found := QueryDb[uid]
+			if found {
+				fmt.Fprintf(w, "\"ip\":\"%s\",\n", entry.dnsSrc)
+				fmt.Fprintf(w, "\"geo\":{\"Cont\":\"%s\",\"CC\":\"%s\",\"Name\":\"%s\"},\n",
+					entry.dnsGeo.Continent.Code,
+					entry.dnsGeo.Country.ISOCode,
+					entry.dnsGeo.Country.Names["en"])
+				fmt.Fprintf(w, "\"prefix\":{\"ASN\":\"%d\",\"Org\":\"%s\",\"CC\":\"%s\",\"Name\":\"%s\"},\n",
+					entry.dnsASN.ASN,
+					entry.dnsASN.Org,
+					entry.dnsGeo.RegCountry.ISOCode,
+					entry.dnsGeo.RegCountry.Names["en"])
+				if entry.dnsECS.Present {
+					fmt.Fprintf(w, "\"ecs\":{\n")
+					fmt.Fprintf(w, "\"ip\":\"%s\",\"mask\":\"%d\",\n",
+						entry.dnsECS.Addr,
+						entry.dnsECS.Mask)
+					fmt.Fprintf(w, "\"geo\":{\"Cont\":\"%s\",\"CC\":\"%s\",\"Name\":\"%s\"},\n",
+						entry.dnsECS.Geo.Continent.Code,
+						entry.dnsECS.Geo.Country.ISOCode,
+						entry.dnsECS.Geo.Country.Names["en"])
+					fmt.Fprintf(w, "\"prefix\":{\"ASN\":\"%d\",\"Org\":\"%s\",\"CC\":\"%s\",\"Name\":\"%s\"},\n",
+						entry.dnsECS.ASN.ASN,
+						entry.dnsECS.ASN.Org,
+						entry.dnsECS.Geo.RegCountry.ISOCode,
+						entry.dnsECS.Geo.RegCountry.Names["en"])
+					fmt.Fprintf(w, "}\n")
+				}
+				fmt.Fprintf(w, "\"rule\":\"%s\"}\n", entry.dnsRule)
+			} else {
+				fmt.Fprintf(w, "\"status\":\"nouid\"}\n")
+			}
+		} else {
+			fmt.Fprintf(w, "\"status\":\"no6\"}\n")
+		}
+	}
+	fmt.Fprintf(w, "}")
+}
+
 // stats handler
 func handleWebStats(w http.ResponseWriter, req *http.Request) {
 	io.WriteString(w, "Hello Stats\n")
@@ -580,6 +661,7 @@ func listenAndServeHTTP() {
 	//request handlers
 	handler := http.NewServeMux()
 	handler.HandleFunc("/data", handleWebReq)
+	handler.HandleFunc("/json", handleWebJson)
 	handler.HandleFunc("/stats", handleWebStats)
 
 	server := http.Server{
