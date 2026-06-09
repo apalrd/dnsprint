@@ -638,7 +638,7 @@ func handleWebJson(w http.ResponseWriter, req *http.Request) {
 						entry.dnsECS.ASN.Org,
 						entry.dnsECS.Geo.RegCountry.ISOCode,
 						entry.dnsECS.Geo.RegCountry.Names["en"])
-					fmt.Fprintf(w, "}\n")
+					fmt.Fprintf(w, "},\n")
 				}
 				fmt.Fprintf(w, "\"rule\":\"%s\"}\n", entry.dnsRule)
 			} else {
